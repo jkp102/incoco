@@ -1,0 +1,128 @@
+.PROGRAM rn.trig.control()
+;
+; ABSTRACT: This program is to generate a belt latch signal at any distance.
+;           After receiving the trigger signal from PLC and moving a certain distance,
+;           turn on the Belt Latch signal.
+; INPUTS:
+;
+; OUTPUTS:
+;
+; SIDE EFFECTS:
+;
+; DATA STRUCT:
+;
+; MISC:
+;
+;* Copyright (c) 2021 by SungJoon
+        AUTO REAL cur.enc.val, pre.enc.val, stt
+        AUTO REAL diff.belt.enc, diff.belt.pos
+
+        IF (TASK(1,belt.latch.task) <> 4) THEN
+            ABORT belt.latch.task
+            CYCLE.END belt.latch.task
+            KILL belt.latch.task
+        END
+
+        IF (TASK(1,rob.que.task) <> 4) THEN
+            ABORT rob.que.task
+            CYCLE.END rob.que.task
+            KILL rob.que.task
+        END
+
+        CALL rn.belt.init()
+
+     ;start Bele Queue Tasks
+        EXECUTE belt.latch.task rn.ltch.control()
+        EXECUTE rob.que.task rn.que.put.lch()
+
+     ;Initialize Trigger signal is OFF -> Trigger 신호 꺼질때까지 대기
+        DO
+            WAIT
+            IF que.reset THEN        ; que Reset 사용안하는 듯
+                GOTO 100
+            END
+        UNTIL NOT SIG(bi.belt.trigger)
+
+        trig.task.run = TRUE    ;Trigger Task is started
+
+        WHILE system.run DO
+
+        ;Wait Belt Trigger signal from PLC
+            DO
+                RELEASE -1
+                IF que.reset THEN
+                    GOTO 100
+                END
+            UNTIL SIG(bi.belt.trigger)        ;trigger wait until you come in
+            TYPE "bi.belt.trigger", bi.belt.trigger
+           ;The current value of the encoder
+            cur.enc.val = DEVICE(0,belt.pk.encoder-1,stt,1) ; belt Trigger 위치 저장
+            IF stt < 0 THEN
+         ;Encode Error
+                $sys.error = $ERROR(stt)
+                CALL rn.error($sys.error)
+  ;;;              GOTO 100
+            END
+
+            pre.enc.val = cur.enc.val        ;save the value
+
+            ; 여기까지 이해했음.
+            ;Put Encode Value to Trigger Queue
+
+            trig.queue[belt.trig.pnum,que.beltpos] = cur.enc.val
+            trig.queue[belt.trig.pnum,que.state] = 1
+
+             ;Display Encoder value
+            IF disp.trig.mess THEN
+                TYPE "Trigger Encoder Value["+$ENCODE(/i0,belt.trig.pnum,",",que.beltpos)+"] = ", cur.enc.val
+
+                IF belt.trig.pnum <> 0 THEN
+                    TYPE "Trig Indexing Value : ", ABS(trig.queue[belt.trig.pnum,que.beltpos]-trig.queue[belt.trig.pnum-1,que.beltpos])*belt.pk.scale[pick.belt.no]
+                ELSE
+                    TYPE "Trig Indexing Value : ", ABS(trig.queue[belt.trig.pnum,que.beltpos]-trig.queue[max.que.size-1,que.beltpos])*belt.pk.scale[pick.belt.no]
+                END
+            END
+
+            belt.trig.pnum = belt.trig.pnum+1
+            IF belt.trig.pnum >= max.trig.size THEN
+                belt.trig.pnum = 0
+            END
+
+           ;To prevent sensor trigger malfunction,
+           ;check the Trigger Sensor OFF after the Belt has moved a certain distance.
+            DO
+                RELEASE -1
+                IF que.reset THEN
+                    GOTO 100
+                END
+             ;Check signal is broken or not
+                cur.enc.val = DEVICE(0,belt.pk.encoder-1,stt,1)
+                IF stt < 0 THEN
+             ;Encode Error
+                    $sys.error = $ERROR(stt)
+                    CALL rn.error($sys.error)
+                END
+
+                diff.belt.enc = ABS(pre.enc.val-cur.enc.val)
+
+                IF diff.belt.enc > INT(enc.max.value/2) THEN
+                    diff.belt.enc = ABS(enc.max.value-diff.belt.enc)
+                END
+
+                diff.belt.pos = diff.belt.enc*belt.pk.scale[pick.belt.no]
+               ;;; TYPE cur.enc.val ;diff.belt.pos
+            UNTIL (diff.belt.pos > INT(part.lch.dist/2))
+
+            DO
+                RELEASE -1
+                IF que.reset THEN
+                    GOTO 100
+                END
+            UNTIL NOT SIG(bi.belt.trigger)
+        END
+
+ 100    $trig.enc.value = "Belt Trigger Sequence is stopped"
+        $w_eplcio_str2 = "Belt Trigger Sequence is stopped"
+        trig.task.run = FALSE
+
+.END
