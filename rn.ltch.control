@@ -1,0 +1,107 @@
+.PROGRAM rn.ltch.control()
+;
+; ABSTRACT: This program is to generate a belt latch signal at any distance.
+;           After receiving the trigger signal from PLC and moving a certain distance,
+;           turn on the Belt Latch signal.
+; INPUTS:
+;
+; OUTPUTS:
+;
+; SIDE EFFECTS:
+;
+; DATA STRUCT:
+;
+; MISC:
+;
+;* Copyright (c) 2021 by SungJoon
+        AUTO REAL cur.enc.val, pre.enc.val, stt
+        AUTO REAL diff.belt.pos, diff.belt.enc
+        AUTO REAL belt.distance
+
+        ;Wait Trigger Task is started.
+        DO
+            RELEASE -1
+            IF que.reset THEN
+                GOTO 100
+            END
+        UNTIL trig.task.run
+
+        latch.task.run = TRUE
+
+        SIGNAL -bo.belt.latch
+        SIGNAL -bo.belt.latch2
+        $w_eplcio_str2 = "latch off"
+
+        WHILE system.run DO
+
+        ;Wait Belt Trigger Queue is available
+            DO
+                RELEASE -1
+                IF que.reset THEN
+                    GOTO 100
+                END
+            UNTIL trig.queue[belt.trig.gnum,que.state] == 1
+
+            trig.queue[belt.trig.gnum,que.state] = 0
+
+           ;Get the encoder position value from Trigger Queue
+            pre.enc.val = trig.queue[belt.trig.gnum,que.beltpos]
+
+            DO
+                RELEASE -1
+                cur.enc.val = (DEVICE(0,belt.pk.encoder-1,stt,1))
+                IF stt < 0 THEN
+             ;Encode Error
+                    $sys.error = $ERROR(stt)
+                    CALL rn.error($sys.error)
+               ;; GOTO 100
+                END
+
+            ;Check how far the encoder position has flowed
+                diff.belt.enc = ABS(cur.enc.val-pre.enc.val)
+
+            ;Check encoder rollover value
+                IF diff.belt.enc > INT(enc.max.value/2) THEN
+                    diff.belt.enc = ABS(enc.max.value-diff.belt.enc)
+
+            ;TYPE "ROLL OVER : ",diff.belt.enc
+
+                END
+
+                diff.belt.pos = diff.belt.enc*belt.pk.scale[pick.belt.no]
+
+                IF que.reset THEN
+                    GOTO 100
+                END
+
+              ;;  TYPE "Latch Distance : ["+ $ENCODE(/i0,belt.trig.gnum)+"] = ",diff.belt.pos
+            UNTIL diff.belt.pos >= pos.lch.offset+dist.add
+
+           ;Trigger Belt Latch Signal
+            $pk.belt.message = "Belt Latch is ON"
+            ;;TYPE $pk.belt.message
+            SIGNAL bo.belt.latch, bo.belt.latch2
+            $w_eplcio_str2 = "Belt Latch is ON"
+
+            WAIT.EVENT , latch.off.delay
+            SIGNAL -bo.belt.latch, -bo.belt.latch2
+            $w_eplcio_str2 = "Belt Latch is OFF"
+
+            belt.trig.gnum = belt.trig.gnum+1
+
+            IF belt.trig.gnum >= max.trig.size THEN
+                belt.trig.gnum = 0
+            END
+
+            $pk.belt.message = "Place Belt Latch is OFF"
+
+            IF que.reset THEN
+                GOTO 100
+            END
+        END
+
+ 100    $pk.belt.message = "Pick Belt Latch Sequence is stopped"
+        $w_eplcio_str2 = "Pick Belt Latch Sequence is stopped"
+
+        latch.task.run = FALSE
+.END
