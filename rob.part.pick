@@ -1,0 +1,291 @@
+.PROGRAM rob.part.pick(grip.num)
+;
+; ABSTRACT:     Perform a pick operation at a belt latch location
+;
+; INPUTS:       None
+;
+; OUTPUTS:      None
+;
+        AUTO REAL distance, belt.pick.time, g.ok
+        AUTO LOC loc, appro.loc, cal.offset, pick.limit, pick.loc, offset, belt.pk.offset
+        AUTO LOC pk.wait.loc, tmp.loc
+        AUTO REAL at.wait, position, grip.state, que.get.index
+        LOCAL jt[], jt1[]
+
+;        REACTE err.rob.reacte
+
+        belt.pick.time = 0     ; Amount of time (in seconds) it will take the robot to pick the part
+
+        COARSE 100 ALWAYS
+ 10     
+
+; Access the queue and wait until an instance is available for processing
+        at.wait = FALSE
+
+        DO
+
+    ; See if a latch is available in the latch buffer.
+    ; If not, then move to the wait location
+    ; If a latch is available, then wait for the instance to track in range
+ 30         g.ok = FALSE
+            CALL rn.que.get.lch(position, g.ok, que.get.index)
+            IF NOT g.ok THEN
+                IF NOT at.wait THEN
+                    CALL set.speed(teach.mode, pk.wait.id, loc.seq)
+                    MOVE pick.wait[1]
+                    $w_eplcio_str2 = "pick.wait" ;;robot status, $w_eplcio_str2
+                    at.wait = TRUE
+;                    CALL rn.check.pause()
+                    IF rt.stop GOTO 100
+                END
+
+                IF rt.stop THEN
+                    GOTO 100
+                END
+
+                WAIT
+                GOTO 30
+            END
+
+            SETBELT %pick.belt[pick.belt.no] = position
+            TYPE "position", position
+            IF teach.mode THEN
+                SET pick.offset[1] = NULL
+                SET pick.offset[2] = NULL
+            END
+
+            ;pick.offset.com[] are recevied from HMI
+            IF lch.queue[belt.lch.gnum,que.alter] == 1 THEN
+                SET belt.pk.offset = pick.offset[1]:pick.offset.com[1]
+            ELSE
+                SET belt.pk.offset = pick.offset[2]:pick.offset.com[2]
+            END
+
+            ;The Latch Offset value is actually
+            ;the distance from the Queue Latch position to the Normal Location.
+            ;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+            SET latch.offset = TRANS(trig.dist+pos.lch.offset+dist.add,0,0,0,0,0)
+            ;-------------------------------------------------------------
+
+            IF robot.emul AND NOT teach.mode THEN
+                SET loc = latch.offset:belt.pk.offset:TRANS(,,-40)
+                SET appro.loc = loc:TRANS(0,0,-pk.app.height):TRANS(,,-40)
+            ELSE
+                SET loc = latch.offset:belt.pk.offset
+                SET appro.loc = loc:TRANS(0,0,-pk.app.height)
+            END
+
+            DO
+                distance = WINDOW(%pick.belt[pick.belt.no]:appro.loc,belt.pick.time,1)
+;                TYPE "", distance
+            ;If the current product is out of the window, the product will be discarded.
+                IF distance > 0 THEN
+                    WAIT NOT TAS(q.locked,TRUE)
+                    lch.queue[belt.lch.gnum,que.state] = 0
+                    belt.lch.gnum = belt.lch.gnum+1
+                    IF belt.lch.gnum >= max.que.size THEN
+                        belt.lch.gnum = 0
+                    END
+                    q.locked = FALSE
+                END
+
+                WAIT
+                IF (distance < 0) AND NOT at.wait THEN
+                    CALL set.speed(teach.mode, pk.wait.id, loc.seq)
+                    IF lch.queue[belt.lch.gnum,que.alter] == 1 THEN
+                        SET pk.wait.loc = pick.wait[1]
+                    ELSE
+                        SET pk.wait.loc = pick.wait[2]
+                    END
+                    MOVE pk.wait.loc
+
+                    at.wait = TRUE
+                END
+
+                IF rt.stop THEN
+                    GOTO 100
+                END
+
+                IF distance < (trig.dist-1000) THEN
+                    WAIT NOT TAS(q.locked,TRUE)
+                    lch.queue[belt.lch.gnum,que.state] = 0
+                    belt.lch.gnum = belt.lch.gnum+1
+                    IF belt.lch.gnum >= max.que.size THEN
+                        belt.lch.gnum = 0
+                    END
+                    q.locked = FALSE
+                    GOTO 30
+                END
+
+
+            UNTIL (distance >= 0)
+
+            distance = WINDOW(%pick.belt[pick.belt.no]:appro.loc,belt.pick.time,1)
+
+            IF distance > 0 THEN
+                WAIT NOT TAS(q.locked,TRUE)
+                lch.queue[belt.lch.gnum,que.state] = 0
+                belt.lch.gnum = belt.lch.gnum+1
+                IF belt.lch.gnum >= max.que.size THEN
+                    belt.lch.gnum = 0
+                END
+                q.locked = FALSE
+            END
+
+            IF rt.stop THEN
+                GOTO 100
+            END
+            WAIT
+
+        UNTIL distance == 0
+        $w_eplcio_str2 = "distance = 0"
+        IF SIG(bi.rt.pause) THEN
+;            CALL rn.check.pause()
+            IF rt.stop GOTO 100
+            WAIT NOT TAS(q.locked,TRUE)
+            lch.queue[belt.lch.gnum,que.state] = 0
+            belt.lch.gnum = belt.lch.gnum+1
+            IF belt.lch.gnum >= max.que.size THEN
+                belt.lch.gnum = 0
+            END
+            q.locked = FALSE
+            WAIT
+            GOTO 30
+        END
+
+;Check if the position is outside the Pick up Limit
+        SET pick.loc = %pick.belt[pick.belt.no]:loc
+
+        SET tmp.loc = pick.loc
+
+        DECOMPOSE jt[1] = tmp.loc
+
+        IF lch.queue[belt.lch.gnum,que.alter] == 1 THEN
+            IF first.run1 THEN
+                DECOMPOSE jt1[1] = pick.wait[1]
+                SET pick.wait[1] = TRANS(jt1[1],jt[2],jt[3]+pk.app.height,jt[4],jt[5],jt[6])
+                first.run1 = FALSE
+            END
+        ELSE
+            IF first.run2 THEN
+                DECOMPOSE jt1[1] = pick.wait[2]
+                SET pick.wait[2] = TRANS(jt1[1],jt[2],jt[3]+pk.app.height,jt[4],jt[5],jt[6])
+                first.run2 = FALSE
+            END
+        END
+
+        ;Calculate the pick limit. This calculation must be changed with
+        ;current robot coordinate.
+        DECOMPOSE jt[1] = belt.win2[pick.belt.no] ;Belt lower limit
+
+        IF rob.belt.rev THEN
+            SET pick.limit = TRANS(jt[1]+pick.limit.xval,jt[2]+pick.limit.yval,jt[3],jt[4],jt[5],jt[6])
+            IF DX(pick.loc) <= DX(pick.limit) THEN
+
+                WAIT NOT TAS(q.locked,TRUE)
+                lch.queue[belt.lch.gnum,que.state] = 0
+                belt.lch.gnum = belt.lch.gnum+1
+                IF belt.lch.gnum >= max.que.size THEN
+                    belt.lch.gnum = 0
+                END
+                q.locked = FALSE
+                WAIT
+                GOTO 30
+            END
+        ELSE
+            SET pick.limit = TRANS(jt[1]-pick.limit.xval,jt[2]+pick.limit.yval,jt[3],jt[4],jt[5],jt[6])
+            IF DX(pick.loc) >= DX(pick.limit) THEN
+                TYPE "limit"
+                WAIT NOT TAS(q.locked,TRUE)
+                lch.queue[belt.lch.gnum,que.state] = 0
+                belt.lch.gnum = belt.lch.gnum+1
+                IF belt.lch.gnum >= max.que.size THEN
+                    belt.lch.gnum = 0
+                END
+                q.locked = FALSE
+                WAIT
+                GOTO 30
+            END
+        END
+
+        grip.num = lch.queue[que.get.index,que.partok]
+
+        IF teach.mode THEN
+            PAUSE
+            SETBELT %pick.belt[pick.belt.no] = position
+            HERE %pick.belt[pick.belt.no]:loc:offset
+            SET pick.offset[1] = offset
+            SET pick.offset[2] = offset
+            PAUSE
+            SET loc = loc:offset
+            SET appro.loc = loc:TRANS(0,0,pk.app.height)
+            SET dep.loc = loc:TRANS(0,0,pk.dep.height)
+        END
+
+        ;If parts are all NG (Part1,Part2),robot will not pcikup parts.
+        IF (grip.num <> 1) AND (grip.num <> 2) AND (grip.num <> 3) THEN
+            WAIT NOT TAS(q.locked,TRUE)
+            lch.queue[belt.lch.gnum,que.state] = 0
+            belt.lch.gnum = belt.lch.gnum+1
+            IF belt.lch.gnum >= max.que.size THEN
+                belt.lch.gnum = 0
+            END
+            q.locked = FALSE
+            GOTO 30
+        END
+
+      ; Move into appro position
+        IF at.wait THEN
+            CALL set.speed(teach.mode, pick.id2, app.seq)
+        ELSE
+            CALL set.speed(teach.mode, pick.id, app.seq)
+        END
+
+        MOVES %pick.belt[pick.belt.no]:appro.loc
+        $w_eplcio_str2 = "pick approch"
+        IF rt.stop THEN
+            GOTO 100
+        END
+
+          ;Gripper close
+
+        CALL rn.grip.close(grip.num, pk.cls.time)
+        $w_eplcio_str2 = "grip.close"
+
+    ; Move into position
+        CALL set.speed(teach.mode, pick.id, loc.seq)
+        MOVES %pick.belt[pick.belt.no]:loc
+        $w_eplcio_str2 = "pick move"
+
+        IF rt.stop THEN
+            GOTO 100
+        END
+
+;Depart from the position
+        CALL set.speed(teach.mode, place.id, dep.seq)
+
+;;;        DECOMPOSE jt[1] = HERE
+;;;
+;;;        SET cur.loc = TRANS(jt[1],jt[2],jt[3]+50,jt[4],jt[5],jt[6])
+;;;
+;;;        COARSE 1000
+;;;        MOVES cur.loc
+
+        DEPARTS pk.dep.height
+        $w_eplcio_str2 = "pick depart"
+        IF a.pk.teach THEN
+            PAUSE
+        END
+
+
+ 90     WAIT NOT TAS(q.locked,TRUE)
+        lch.queue[belt.lch.gnum,que.state] = 0
+        belt.lch.gnum = belt.lch.gnum+1
+        IF belt.lch.gnum >= max.que.size THEN
+            belt.lch.gnum = 0
+        END
+        q.locked = FALSE
+
+ 100    RETURN
+
+.END
