@@ -1,0 +1,56 @@
+.PROGRAM rn.que.get.lch(l.value, get.ok, get.index)
+;
+; ABSTRACT:
+;
+; INPUTS:
+;
+; OUTPUTS:
+;
+; SIDE EFFECTS:
+;
+; DATA STRUCT:
+;
+; MISC:  Program created in ACE version 3.8.3.150
+;
+;* Copyright (c) 2021 by Sungjoon
+        AUTO REAL val, i
+
+        get.ok = FALSE
+        get.index = 0
+
+        l.value = 0
+
+        WHILE system.run DO
+            WAIT
+            IF lch.queue[belt.lch.gnum,que.state] == 1 THEN
+              ; Wait until queue is free, and lock it
+                WAIT NOT TAS(q.locked,TRUE)
+
+                val = lch.queue[belt.lch.gnum,que.beltpos]
+                get.index = belt.lch.gnum
+
+                l.value = val
+                get.ok = TRUE
+                GOTO 100
+            ELSE
+                IF belt.lch.gnum == belt.lch.pnum THEN
+                    GOTO 100
+                END
+
+                belt.lch.gnum = belt.lch.gnum+1
+
+                IF belt.lch.gnum >= max.que.size THEN
+                    belt.lch.gnum = 0
+                END
+            END
+
+            IF rt.stop THEN
+                GOTO 100
+            END
+        END
+
+ 100    q.locked = FALSE
+
+        RETURN
+
+.END
