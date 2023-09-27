@@ -1,0 +1,236 @@
+.PROGRAM load.belt($file, cal[], %b[], sf[], nom[], win1[], win2[], $error)
+
+; ABSTRACT:  This subroutine reads belt calibration information from a
+;       disk file and returns its values to the caller.  In addition,
+;       for each defined belt (as indicated by the values "cal[i]",     ;S05+
+;       for i = 1, 2, ...), a belt variable is defined as follows:      ;S05-
+;
+;               DEFBELT %b[i] = nom[i], i, 32, sf[i]
+;               WINDOW %b[i] = win1[i], win2[i]
+;
+;       After this routine has successfully processed the calibration
+;       file, the system is ready to perform belt tracking operations
+;       with the defined belts.
+;
+;       All of the calibration data is returned to the caller for
+;       completeness, but normally, only "%b[]" and the window locations
+;       ("win1[]" and "win2[]") need to be subsequently utilized.
+;
+;       NOTES:  No window error routine is mentioned in the WINDOW
+;               instruction that is executed.
+;
+;               If the calibration data file contains information for   ;S07+
+;               less than the number of belts supported by the current
+;               system, the array "cal[]" will have elements defined to
+;               indicate that the "missing" belts are not calibrated.
+;
+;               If the calibration data file contains information for
+;               more than the number of belts supported by the current
+;               system, the calibration data for the "excess" belts is
+;               returned, but it is NOT used to define belts. In this
+;               case, the elements of "cal[]" corresponding to the
+;               "excess" belts represent only the calibration status
+;               of the data in the calibration data file.               ;S07-
+;
+; INPUT PARM:   $file   Name of the disk file containing the belt
+;                       calibration data.  In its most general form,
+;                       this can be specified as                        ;S10+
+;
+;                               device>unit:\path\name.extension
+;                                                                       ;S10-
+;                       If the file was created by "a.belt_cal", the
+;                       file name will have the form "BELTxxx.DAT",
+;                       where "xxx" is the data set number.
+;
+; OUTPUT PARM:  If no error occurs,                                     ;S05+
+;
+;                  $error    Will be an empty string (or possibly       ;S07+
+;                            contain a warning message), and each of
+;                            the following arrays will have element
+;                            "i" filled with information for belt "i"
+;                            (for i = 1, 2, 3, ...).                    ;S05-
+;
+;                  cal[]     Real array.  (See comments above.)
+;                               "cal[0]" contains the number of belts
+;                                  (calibrated or not) that were
+;                                  represented in the data file.
+;                                  ("$error" will contain a warning if
+;                                  this number is different than the
+;                                  number of belts supported by the
+;                                  current V+ system.)
+;                               "cal[i]" [for "i" = 1 to ID(7,10)]
+;                                  contains TRUE if belt "i" has been
+;                                  calibrated.  If the value is FALSE,
+;                                  the corresponding elements in the
+;                                  other arrays will be invalid and
+;                                  possibly undefined.                  ;S07-
+;                  %b[]      Belt variable array.
+;                  sf[]      Real array containing belt scale factors.
+;                  nom[]     Transformation array containing the nominal
+;                            locations of the belts.
+;                  win1[]    Transformation array containing the 1st belt
+;                            window positions.
+;                  win2[]    Transformation array containing the 2nd belt
+;                            window positions.
+;               else
+;
+;                  $error    Will contain an error message string.
+;
+; SIDE EFFECTS: The BELT system switch is enabled.
+;
+; MISC: The output parameter "$error" can contain a warning message     ;S07+
+;       after successful operation of the routine.  Thus, the calling
+;       program should check BOTH of the following conditions after
+;       calling this routine:
+;
+;       $error == ""                    (indicating no error or warning)
+;
+;       $MID($error,1,8) == "*WARNING"  (indicating a warning)          ;S07-
+;
+;* Copyright (c) 1985, 1994 by Adept Technology, Inc.
+
+        AUTO dlun, i, num.belts, per.belt, o
+        LOCAL d[]
+        LOCAL $dev, $line, $name, $title
+
+; Check for correct processor (do this first, because auxiliary CPUs    ;S09+
+;                               never support belt encoders)
+
+        IF ID(1,4) <> 1 THEN        ;Must be on CPU #1
+            $error = "*Program must be run on processor #1*"
+            GOTO 120
+        END
+
+; Check for support of belt encoders
+
+        IF (ID(5) BAND 2) == 0 THEN
+            $error = "*This system does not support belt encoders*"
+            GOTO 120
+        END    ;S09-
+
+; Check for valid parameter                                             ;S02+
+
+        IF NOT DEFINED($file) THEN
+            $error = "*Belt calibration data file name not defined*"
+            GOTO 120
+        END    ;S02-
+
+; Initialize values.
+
+        num.belts = 1 ; ID(7,10)            ;Number of belts supported ;S05+;H06
+        per.belt = 20           ;Number data items per belt     ;S05-
+        $error = ""    ;Assume no error occurs
+
+; Title string must EXACTLY match that in the belt-tracking calibration
+;       routine (BELT_CAL.V2)
+
+        $title = "Conveyor Belt Calibration  Version 1.0"
+
+; Open the data file.                                                   ;S10+
+
+        $name = $file           ;Copy to scratch string
+
+        ; Extract device specification if there is one.  If no device
+        ; is specified, default to "DISK" because that is how this
+        ; routine has worked in the past.  That is, do NOT default to
+        ; "SYSTEM", because that could change the behavior of existing
+        ; usage of the routine.
+
+        IF POS($name,">") THEN          ;Device specified?
+            $dev = $DECODE($name,">",0)         ;Strip out the device name
+            $name = $MID($name,2,100)           ;Delete the ">"
+        ELSE
+            $dev = "DISK"     ;Default (see comment above)
+        END
+
+        ATTACH (dlun, 5) $dev           ;Attach & assign LUN            ;S05+
+        IF IOSTAT(dlun) < 0 GOTO 100        ;S05-
+        FOPENR (dlun) $name
+        IF IOSTAT(dlun) < 0 GOTO 100
+
+; Read and process the file header.                                     ;S10-
+
+        READ (dlun) $line
+        IF IOSTAT(dlun) < 0 GOTO 100
+
+        IF $MID($line,7,128) <> $title THEN
+            $error = "*Not a valid conveyor belt calibration data file*"
+        ELSE
+
+; Valid file header.  Process the data section of the file.
+
+            i = 0     ;Initial array index         ;S08+
+            WHILE TRUE DO     ;Loop until end of file ;S07 ;S08-
+                READ (dlun) $line    ;Read line from file
+                IF IOSTAT(dlun) < 0 GOTO 100
+
+                IF $line == ".END" GOTO 10 ;".END" marks EOF
+
+                d[i] = VAL($line)    ;Extract data value
+                i = i+1        ;Step to next element        ;S08
+            END
+
+; Quit if we didn't find a correct number of values.                    ;S07+
+
+ 10         cal[0] = INT(i/per.belt)    ;Record number of belts seen
+
+            IF i <> cal[0]*per.belt THEN ;Quit if data count wrong
+                $error = "*Invalid calibration data format*"
+                GOTO 110
+            END
+
+; Return warning if we didn't find data for expected number of belts.
+
+
+            IF cal[0] < num.belts THEN          ;H06+
+                $error = "*WARNING:  Only"+$ENCODE(cal[0])+" belt"
+                IF cal[0] > 1 THEN
+                    $error = $error+"s"
+                END
+                $error = $error+" calibrated*"
+            END
+            IF cal[0] > num.belts THEN
+                i = cal[0]-num.belts    ;Number of belts ignored
+                $error = "*WARNING:  Data for"+$ENCODE(i)+" belt"
+                IF i > 1 THEN
+                    $error = $error+"s"
+                END
+                $error = $error+" has been ignored*"
+            END         ;S07-
+
+; Initialize the belt variables.
+
+            ENABLE BELT
+
+            FOR i = 1 TO MAX(num.belts,cal[0])          ;S05+
+                o = per.belt*(i-1)    ;S05-
+                IF DEFINED(d[o+0]) THEN
+                    cal[i] = d[o+0]
+                ELSE
+                    cal[i] = 0
+                END
+                IF cal[i] THEN
+                    sf[i] = d[o+1]
+                    SET nom[i] = TRANS(d[o+2],d[o+3],d[o+4],d[o+5],d[o+6],d[o+7])
+                    SET win1[i] = TRANS(d[o+8],d[o+9],d[o+10],d[o+11],d[o+12],d[o+13])
+                    SET win2[i] = TRANS(d[o+14],d[o+15],d[o+16],d[o+17],d[o+18],d[o+19])
+                    IF i <= num.belts THEN    ;S07
+                        DEFBELT %b[i] = nom[i], i, 32, sf[i]
+                        WINDOW %b[i] = win1[i], win2[i]
+                    END         ;S07
+                END
+            END         ;H06-
+        END
+        GOTO 110
+
+; Exit sequences.
+
+ 100    $error = $ERROR(IOSTAT(dlun))           ;Return disk error
+
+ 110    DETACH (dlun)           ;Detach the disk LUN
+
+ 120    MCS "DELETER @ d[]"    ;Delete LOCAL array             ;S05
+        MCS "DELETES @ $dev, $line, $name, $title"    ;S10
+
+        RETURN
+.END
