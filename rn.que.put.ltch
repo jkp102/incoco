@@ -1,0 +1,169 @@
+.PROGRAM rn.que.put.lch()
+;
+; ABSTRACT:
+;
+; INPUTS:
+;
+; OUTPUTS:
+;
+; SIDE EFFECTS:
+;
+; DATA STRUCT:
+;
+; MISC:  Program created in ACE version 3.8.3.150
+;
+;* Copyright (c) 2021 by SungJoon
+        AUTO REAL rob.no, diff.belt.enc, diff.belt.pos, latch.num, latch.value
+        AUTO LOC loc, appro.loc
+        AUTO REAL que.diff, pre.latch.val
+        AUTO REAL cur.enc.val, stt, pre.val
+        AUTO REAL plc.noresp, part.status, tim, tim1, ellipse.time
+        AUTO REAL tim
+
+       ;Wait Latch Control Task is to start.
+        DO
+            RELEASE -1
+            IF que.reset THEN
+                GOTO 100
+            END
+        UNTIL latch.task.run
+
+;        latch.num = ABS(LATCHED(-belt.pk.encoder))
+        WHILE system.run DO
+            RELEASE -1
+            latch.num = ABS(LATCHED(-belt.pk.encoder))
+
+           ;put latch value into latch queue
+            IF latch.num == bi.belt.latch THEN
+                latch.value = DEVICE(0,belt.pk.encoder-1,stt,4)
+            ;pre.value = DEVICE(0,belt.pk.encoder-1,stt,1)
+                IF stt < 0 THEN
+               ;Encode Error
+                    $sys.error = $ERROR(stt)
+                    CALL rn.error($sys.error)
+            ;;GOTO 100
+                END
+
+                lch.queue[belt.lch.pnum,que.beltpos] = latch.value
+
+            ;Wait part NG/OK Signal from PLC
+                plc.noresp = FALSE
+
+                tim = TIMER(-3)+vis.wait.time  ;Max Vision Inspection time
+
+                DO
+                    RELEASE -1
+                    IF que.reset THEN
+                        GOTO 100
+                    END
+             ;Check signal is broken or not
+                    cur.enc.val = DEVICE(0,belt.pk.encoder-1,stt,1)
+                    IF stt < 0 THEN
+               ;Encode Error
+                        $sys.error = $ERROR(stt)
+                        CALL rn.error($sys.error)
+                        GOTO 100
+                    END
+
+              ;Check if the Part NG/OK signal comes from PLC within the specified distance.
+              ;The signal must come on until 1 cycle of the trigger signal is finished.
+              ;That is, vision inspection must be completed.
+
+                    diff.belt.enc = ABS(latch.value-cur.enc.val)
+
+                    IF diff.belt.enc > INT(enc.max.value/2) THEN
+                        diff.belt.enc = ABS(enc.max.value-diff.belt.enc)
+                    END
+
+                    diff.belt.pos = diff.belt.enc*belt.pk.scale[pick.belt.no]
+
+                    IF diff.belt.pos > part.lch.dist-20 THEN
+                        plc.noresp = TRUE
+                        GOTO 30
+                    END
+
+                    CALL rn.check.part(part.status)
+
+                    latch.num = ABS(LATCHED(-belt.pk.encoder))
+                    latch.num = 0
+                UNTIL part.status >= 0
+
+ 30             IF plc.noresp THEN
+            ;Send Error to PLC
+            ; GOTO 100
+                END
+
+            ;Check NG/OK Signals
+                CALL rn.check.part(part.status)
+                lch.queue[belt.lch.pnum,que.partok] = part.status
+                lch.queue[belt.lch.pnum,que.state] = 1
+
+            ;Check pick alternative
+                IF NOT SIG(bi.belt.alter) THEN
+                    lch.queue[belt.lch.pnum,que.alter] = 1
+                ELSE
+                    lch.queue[belt.lch.pnum,que.alter] = 1 ;2
+                END
+
+            ;Display Encoder value
+                IF disp.que.mess THEN
+            ;;TYPE "Latch Encoder Value["+$ENCODE(/i0,belt.lch.pnum,",",que.beltpos)+"] = ", lch.queue[belt.lch.pnum,que.beltpos]*belt.pk.scale[pick.belt.no]
+                    IF belt.lch.pnum <> 0 THEN
+                        TYPE "Indexing Value : ", ABS(lch.queue[belt.lch.pnum,que.beltpos]-lch.queue[belt.lch.pnum-1,que.beltpos])*belt.pk.scale[pick.belt.no]
+                    ELSE
+                        TYPE "Indexing Value : ", ABS(lch.queue[belt.lch.pnum,que.beltpos]-lch.queue[max.que.size-1,que.beltpos])*belt.pk.scale[pick.belt.no]
+                    END
+                END
+
+                belt.lch.pnum = belt.lch.pnum+1
+                IF belt.lch.pnum >= max.que.size THEN
+                    belt.lch.pnum = 0
+                END
+
+              ;If the Put index is behind the get index,
+              ;if the difference between the two values is greater than the specified value,
+              ;increase the get index by one.
+              ;This case occurs when put is in progress but get is not performed.
+              ;Make sure there is not too much difference between the two values.
+
+               ; Wait until queue is free, and lock it
+                WAIT NOT TAS(q.locked,TRUE)
+
+                IF belt.lch.pnum < belt.lch.gnum THEN
+                    que.diff = max.que.size+belt.lch.pnum-belt.lch.gnum
+                ELSE
+                    que.diff = belt.lch.pnum-belt.lch.gnum
+                END
+
+                IF que.diff > real.que.size THEN
+                    belt.lch.gnum = belt.lch.gnum+1
+                    IF belt.lch.gnum >= max.que.size THEN
+                        belt.lch.gnum = 0
+                    END
+                END
+                q.locked = FALSE
+
+             ;2021.3.26++++++++++++++++++++++++++L1+
+               ;reset all Latched value
+
+                WHILE SIG(bo.belt.latch) DO
+                    WAIT
+                    latch.num = ABS(LATCHED(-belt.pk.encoder))
+                    latch.num = 0
+                    IF que.reset THEN
+                        GOTO 100
+                    END
+                END
+               ;----------------------------------L1-
+            END        ;if latch.num == bi.belt.latch
+
+ 90         
+            IF que.reset THEN
+                GOTO 100
+            END
+
+        END
+ 100    
+
+
+.END
