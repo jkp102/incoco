@@ -1,0 +1,143 @@
+.PROGRAM data_exchange()
+;
+; ABSTRACT:
+;
+; INPUTS:
+;
+; OUTPUTS:
+;
+; SIDE EFFECTS:
+;
+; DATA STRUCT:
+;
+; MISC:  Program created in ACE version 3.6.3.50
+;
+;* Copyright (c) 2016 by {company name}
+
+        IF (STATUS("eio.start") == -2) THEN
+            MCS "load d:\adept\util\eplc_io.v2"
+        END
+
+        IF (TASK(1,10) <> 4) THEN
+            EXECUTE 10 eio.start(1640, 640)
+        END
+
+
+;-----------------------------------------------------------
+; Data Initialization
+;-----------------------------------------------------------
+        CALL data_ini()
+
+;-----------------------------------------------------------
+; Write to NJ
+;-----------------------------------------------------------
+ 100    
+        err = 0
+
+;Write Real:
+        FOR i = 1 TO 64        ; from_Robot[0]..[255]
+            CALL eio.put.real(i, w_eplcio_real[i], err)
+        END
+
+        w_eplcio_signal[1] = -1
+
+        IF err < 0 THEN
+            w_eplcio_signal[2] = -1
+        ELSE
+            w_eplcio_signal[2] = 0
+        END
+
+
+;Write Int:
+        FOR i = 1 TO 24        ; from_Robot[256]..[303]
+            CALL eio.put.int(i, w_eplcio_int[i])
+        END
+
+
+;Write Strings
+        CALL eio.put.str(1, $w_eplcio_str1)    ; from_Robot[304]..[391]
+        CALL eio.put.str(2, $w_eplcio_str2)    ; from_Robot[392]..[479]
+
+
+        $w_eplcio_str2 = $sys.message
+     ;  $w_eplcio_str2 = $rob.message
+;        $w_eplcio_str2 = $trig.enc.value
+;        $w_eplcio_str2 = $que.enc.value
+;        $w_eplcio_str2 = $pk.belt.message
+
+;Write Signals:
+        FOR i = 0 TO 32        ; from_Robot[480]..[487]
+
+            IF w_eplcio_signal[i+1] THEN
+                SIGNAL (i+640)
+            ELSE
+                SIGNAL -1*(i+640)
+            END
+
+        END
+
+
+
+
+        FOR i = 33 TO 63     ; from_Robot[480]..[487]
+            IF w_eplcio_signal[i+1] THEN
+                SIGNAL (i+640)
+            ELSE
+                SIGNAL -1*(i+640)
+            END
+        END
+
+
+;-----------------------------------------------------------
+; Read from NJ
+;-----------------------------------------------------------
+
+;Read Real:
+        FOR i = 1 TO 64
+            CALL eio.get.real(i, r_eplcio_real[i])  ; to_Robot[0]..[255]
+        END
+
+        IF (ABS(r_eplcio_real[1]) > max.plc.off.x) OR (ABS(r_eplcio_real[2]) > max.plc.off.y) OR (ABS(r_eplcio_real[3]) > max.plc.off.z) THEN
+            $w_eplcio_str2 = "invaild offset value"
+            GOTO 50
+        END
+
+       ;READ LOCATION OFFSET--------------------------------------------------------------------------
+;Far and near offset are the same
+        SET pick.offset.com[1] = TRANS(r_eplcio_real[1],r_eplcio_real[2],r_eplcio_real[3],0,0,0)
+        SET pick.offset.com[2] = TRANS(r_eplcio_real[1],r_eplcio_real[2],r_eplcio_real[3],0,0,0)
+
+        SET place.offset = TRANS(r_eplcio_real[4],r_eplcio_real[5],r_eplcio_real[6],0,0,0)
+
+
+        max.grip.err = r_eplcio_real[7]        ;; Finger1 Vaccum Fail number check;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+        dist.add = r_eplcio_real[8]
+        ;-------------------------------------------------------------------------------------------
+ 50     
+
+;Read Int:
+        FOR i = 1 TO 24
+            CALL eio.get.int(i, r_eplcio_int[i])    ; to_Robot[256]..[303]
+        END
+
+
+;Read Strings:
+        CALL eio.get.str(1, $r_eplcio_str1)    ; to_Robot[304]..[391]
+        CALL eio.get.str(2, $r_eplcio_str2)    ; to_Robot[392]..[479]
+
+;Read Signals:
+        FOR i = 0 TO 63        ; to_Robot[480]..[487]
+            r_eplcio_signal[i+1] = SIG(1640+i)
+        END
+
+        use.vac.sensor = r_eplcio_signal[1] ;;Finger1 Vaccum Presence check;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;-----------------------------------------------------------
+
+        WAIT.EVENT , 0.05
+
+        GOTO 100
+
+
+
+.END
